@@ -95,12 +95,12 @@ python labeling/step_01_build_references.py --preset key-qa
 
 ## Key QA Hard Negative Rebuild
 
-The hard-dependent seed file adds contrastive cases for dependent enrollment
-rules, especially sibling negative cases and direct-line relatives with
-eligibility conditions:
+The 2026-06-03 hard-dependent seed file adds contrastive cases for dependent
+enrollment rules, especially sibling negative cases and direct-line relatives
+with eligibility conditions:
 
 ```text
-training_data/sources/20260518/key_qa_hard_dependents_raw.csv
+training_data/sources/20260603/key_qa_hard_dependents_raw.csv
 ```
 
 Fetch current chatbot references for those questions:
@@ -108,8 +108,8 @@ Fetch current chatbot references for those questions:
 ```bash
 python labeling/step_01_build_references.py \
   --preset key-qa \
-  --input training_data/sources/20260518/key_qa_hard_dependents_raw.csv \
-  --output training_data/build/20260518/key_qa_hard_dependents_with_reference.csv \
+  --input training_data/sources/20260603/key_qa_hard_dependents_raw.csv \
+  --output training_data/build/20260603/key_qa_hard_dependents_with_reference.csv \
   --user-column user_input \
   --answer-column model_output \
   --workers 1 \
@@ -131,8 +131,8 @@ Build hard-negative SFT rows:
 
 ```bash
 python labeling/step_03_build_general_sft_dataset.py \
-  --input training_data/build/20260518/key_qa_hard_dependents_with_reference.csv \
-  --output training_data/build/20260518/gemma3_sft_key_qa_hard_dependents.csv \
+  --input training_data/build/20260603/key_qa_hard_dependents_supported_reference.csv \
+  --output training_data/build/20260603/gemma3_sft_key_qa_hard_dependents.csv \
   --user-column user_input \
   --reference-column reference \
   --answer-column model_output \
@@ -143,17 +143,31 @@ Merge existing key QA SFT with hard-negative SFT:
 
 ```bash
 python labeling/step_05_merge_sft_csvs.py \
-  --input training_data/build/20260518/gemma3_sft_key_qa.csv \
-  --input training_data/build/20260518/gemma3_sft_key_qa_hard_dependents.csv \
-  --output training_data/build/20260518/gemma3_sft_key_qa_plus_hard_dependents.csv
+  --input training_data/build/20260603/gemma3_sft_key_qa.csv \
+  --input training_data/build/20260603/gemma3_sft_key_qa_hard_dependents.csv \
+  --output training_data/build/20260603/gemma3_sft_key_qa_plus_hard_dependents.csv
 ```
 
-Then rebuild paraphrase expansion from the merged base. Use a separate cache so
-the existing paraphrase cache remains untouched:
+If OpenAI paraphrase generation is available, rebuild paraphrase expansion from
+the merged base. Use a separate cache so the existing paraphrase cache remains
+untouched:
 
 ```bash
 python labeling/step_04_build_key_qa_expansion.py \
-  --input training_data/build/20260518/gemma3_sft_key_qa_plus_hard_dependents.csv \
-  --cache training_data/build/20260518/key_qa_plus_hard_dependents_openai_paraphrases.csv \
-  --output training_data/20260518/gemma3_sft_key_qa_expansion.csv
+  --input training_data/build/20260603/gemma3_sft_key_qa_plus_hard_dependents.csv \
+  --cache training_data/build/20260603/key_qa_plus_hard_dependents_openai_paraphrases.csv \
+  --output training_data/20260603/gemma3_sft_key_qa_expansion.csv
 ```
+
+For the current 2026-06-03 snapshot, the final expansion reuses the existing
+2026-05-18 expanded key QA rows and appends the supported hard-dependent SFT rows
+directly, repeated 10 times:
+
+```text
+training_data/20260518/gemma3_sft_key_qa_expansion.csv
+  + training_data/build/20260603/gemma3_sft_key_qa_hard_dependents.csv x 10
+  -> training_data/20260603/gemma3_sft_key_qa_expansion.csv
+```
+
+This yields 2,700 key QA rows: 2,500 original expanded rows and 200
+hard-dependent rows.
