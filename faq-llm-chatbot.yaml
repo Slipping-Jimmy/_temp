@@ -1,0 +1,128 @@
+services:
+  postgresql_db:
+    container_name: nhi_postgresql_db
+    image: postgresql_db:v1.0.0
+    ports:
+      - "25432:5432"
+    volumes:
+      - postgresql_db_data:/var/lib/postgresql/data
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "wingeneaiteam"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  qdrant:
+    container_name: nhi_qdrant
+    image: h30raiharbor.intra.nhi.gov.tw/external/qdrant:v1.14.0-unprivileged
+    user: "1000:1000"
+    ports:
+      - "16333:6333"
+    volumes:
+      - /var/chatbots/volume/qdrant:/qdrant/storage
+
+  faq_retrieval:
+    container_name: nhi_faq_retrieval
+    image: faq-retrieval-app:v1.0.7
+    ports:
+      - "26691:6611"
+    depends_on:
+      - qdrant
+    volumes:
+      - $PWD/volume/retrieval-controller-dev:/usr/src/app/
+      - $PWD/volume/python-log-config.ini:/run/configmaps/python-log-config/ini:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - EMBEDDING_MODEL=/workspace/embedding_model
+      - EMBED_URL=http://192.168.8.134:25208
+      - EMBED_TIMEOUT=300
+      - COLLECTION_NAME=faq_t01
+      - SEARCH_LIMIT=50
+      - API_PORT=6611
+      - DEVICE=cpu
+      - MAX_REQUEST_COUNT=32
+      - NUM_QDRANT_PARALLEL_PROCESS=1
+      - ACTIVATE_RERANKER=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ai_chatbot_api:
+    container_name: nhi_ai_chatbot_api
+    image: ai-chatbot-api:1.7.9
+    env_file:
+      - .env
+    ports:
+      - "22999:22999"
+    volumes:
+            #      - $PWD/volume/api-server-dev:/src
+      - $PWD/volume/api-server-dev/configs:/src/configs/
+    depends_on:
+      log_api:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  chatbot_frontend:
+    container_name: nhi_chatbot_frontend
+    image: harbor.wingene.k8s/chatbot/chatbot-nhi-frontend:0.6.7
+    ports:
+      - "56789:3000"
+    depends_on:
+      ai_chatbot_api:
+        condition: service_started
+    environment:
+      BOT_NAME: "健保智能客服問答機器人"
+      TLS_ENABLE: false
+      REFERENCE: true
+      SPEECH_PROCESSING: false
+      DEBUG: true
+      HTTP_STREAM: true
+      WEB_SOCKET: false
+      NEXT_PUBLIC_HOST: "http://192.168.8.134:56789"
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  sensitive_keyword_detector_api:
+    container_name: nhi_sensitive_keyword_detector_api
+    image: harbor.wingene.k8s/chatbot/sensitive-keyword-detector-api:v1.2.2
+    volumes:
+      - $PWD/volume/sensitive_services.yaml:/src/configs/services.yaml
+    env_file:
+      - .env
+    ports:
+      - "22299:22299"
+    depends_on:
+      - postgresql_db
+    restart: unless-stopped
+
+  log_api:
+    container_name: nhi_log_api
+    image: log-api:1.7.2
+    ports:
+      - "29999:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgresql_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+
+volumes:
+  postgresql_db_data:
