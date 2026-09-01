@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>備參資料詢問</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar" id="topbar">
+        <div class="brand-block">
+          <svg class="brand-logo" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 10h16v10H4z"></path>
+            <path d="M4 10 12 4l8 6"></path>
+            <path d="m4 10 8 6 8-6"></path>
+            <path d="M8 20v-6"></path>
+            <path d="M16 20v-6"></path>
+          </svg>
+          <h1>備參資料詢問</h1>
+        </div>
+        <div id="statusPanel" class="status-panel idle" aria-live="polite">
+          <div class="status-row">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="statusTitle">待命</span>
+            <span id="statusDetail" class="status-detail">輸入來信後可搜尋資料或生成新草稿</span>
+          </div>
+          <div class="progress-track">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+        </div>
+        <div class="topbar-brand-right">
+          <div class="brand-right-name">
+            <span class="brand-wingene">Wingene</span>
+            <span class="brand-ds">Data Science</span>
+          </div>
+          <div class="brand-version">v0.0.0</div>
+        </div>
+        <button id="topbarCollapseBtn" class="topbar-collapse-btn" type="button" title="收合標題列" aria-label="收合標題列">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+        </button>
+      </header>
+
+      <main class="workspace">
+        <section class="pane source-pane" aria-label="sources">
+          <div class="pane-header">
+            <h2>資料來源</h2>
+            <div class="header-tools">
+              <div id="inlineSearchWrap" class="inline-search-wrap">
+                <button id="sourceDraftBtn" class="source-flow-toggle" type="button" title="以更新後資料重新生成草稿" aria-label="以更新後資料重新生成草稿">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 6c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3Z"></path>
+                    <path d="M4 6v5c0 1.39 2.5 2.56 5.9 2.9"></path>
+                    <path d="M20 6v4"></path>
+                    <path d="M18 15a4 4 0 1 0 1 4"></path>
+                    <path d="M18 12v3h3"></path>
+                  </svg>
+                </button>
+                <button id="searchToggleBtn" class="source-search-toggle" type="button" title="搜尋資料來源">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                </button>
+                <input id="sourceSearchInput" class="inline-search-input" type="text" placeholder="輸入關鍵字..." spellcheck="false" maxlength="400" title="Enter 執行搜尋；Shift + Enter 換行" />
+              </div>
+              <button class="collapse-toggle" type="button" data-collapse-target="source" title="最小化資料來源">-</button>
+            </div>
+          </div>
+          <div class="source-tabs" role="tablist" aria-label="資料來源分頁">
+            <button class="source-tab active" type="button" role="tab" aria-selected="true" data-corpus="reference">
+              <span class="source-tab-label">備參資料</span>
+            </button>
+          </div>
+          <div id="evidenceList" class="evidence-list"></div>
+        </section>
+
+        <div class="splitter vertical-splitter" data-splitter="left" role="separator" aria-orientation="vertical"></div>
+
+        <div class="main-pane">
+          <section class="pane request-pane" aria-label="request">
+            <div class="pane-header">
+              <h2>來信</h2>
+              <div class="header-tools">
+                <button id="requestDraftBtn" class="request-flow-toggle" type="button" title="檢索並生成新草稿" aria-label="檢索並生成新草稿">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m5 5 7 7-7 7"></path>
+                    <path d="m12 5 7 7-7 7"></path>
+                  </svg>
+                </button>
+                <button class="collapse-toggle" type="button" data-collapse-target="request" title="最小化來信">-</button>
+              </div>
+            </div>
+            <div class="request-input-wrapper">
+              <textarea id="requestInput" spellcheck="false" maxlength="400" title="Enter 執行檢索並生成新草稿；Shift + Enter 換行">近年哪些標靶治療相關的檢測已納入健保給付？</textarea>
+              <span class="char-counter" data-counter-for="requestInput">0/400</span>
+              <span class="submit-hint">↵</span>
+            </div>
+          </section>
+
+          <div class="splitter horizontal-splitter" data-splitter="request-draft" role="separator" aria-orientation="horizontal"></div>
+
+          <section class="pane draft-pane" aria-label="draft">
+          <div class="pane-header">
+            <h2>草稿</h2>
+            <div class="draft-actions">
+              <button id="themeToggleBtn" class="icon-button draft-icon-button theme-toggle-button" type="button" title="切換深色模式" aria-label="切換深色模式" aria-pressed="false">
+                <svg class="theme-icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+                <svg class="theme-icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="4"></circle>
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path>
+                </svg>
+              </button>
+              <select id="baseVersionSelect" class="version-select hidden" aria-label="比較基準版本">
+                <option value="">比較版本</option>
+              </select>
+              <div class="mode-switch" role="group" aria-label="切換編輯或顯示">
+                <button id="displayModeBtn" class="mode-option active" type="button">顯示</button>
+                <button id="editModeBtn" class="mode-option" type="button">編輯</button>
+              </div>
+              <button id="compareToggleBtn" class="toggle-button active" type="button" aria-pressed="true">比較</button>
+              <button id="fontDecreaseBtn" class="icon-button text-size-button" type="button" title="縮小字體">A-</button>
+              <button id="fontIncreaseBtn" class="icon-button text-size-button" type="button" title="放大字體">A+</button>
+              <button id="saveDraftBtn" class="icon-button draft-icon-button" type="button" title="儲存版本">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+              </button>
+              <button id="copyBtn" class="icon-button draft-icon-button" type="button" title="複製草稿">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+              <button class="collapse-toggle" type="button" data-collapse-target="draft" title="最小化草稿">-</button>
+            </div>
+          </div>
+          <div class="draft-body">
+            <textarea id="draftEditor" spellcheck="false"></textarea>
+            <pre id="diffViewer" class="diff-viewer hidden"></pre>
+            <div id="floatingFeedbackRow" class="floating-feedback-row">
+              <button class="rating icon-button draft-icon-button" data-rating="up" type="button" title="讚" aria-label="讚">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 10v12" />
+                  <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" />
+                </svg>
+              </button>
+              <button class="rating icon-button draft-icon-button" data-rating="down" type="button" title="倒讚" aria-label="倒讚">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 14V2" />
+                  <path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z" />
+                </svg>
+              </button>
+              <div id="inlineFeedbackWrap" class="inline-feedback-wrap">
+                <button id="feedbackNoteToggle" class="icon-button draft-icon-button" type="button" title="回饋說明" aria-label="回饋說明">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+                  </svg>
+                </button>
+                <input id="feedbackNote" class="inline-feedback-input" type="text" placeholder="輸入說明..." spellcheck="false" maxlength="100" title="Enter 執行送出回饋；Shift + Enter 換行" />
+                <span class="char-counter inline-counter" data-counter-for="feedbackNote">0/100</span>
+              </div>
+            </div>
+          </div>
+          </section>
+        </div>
+
+        <div class="splitter vertical-splitter" data-splitter="right" role="separator" aria-orientation="vertical"></div>
+
+        <aside class="pane command-pane" aria-label="commands">
+          <div class="pane-header compact">
+            <h2>版本</h2>
+            <button class="collapse-toggle" type="button" data-collapse-target="versions" title="最小化版本">-</button>
+          </div>
+          <div id="versionMessages" class="chat-messages version-list"></div>
+          <div class="splitter horizontal-splitter" data-splitter="version-quick" role="separator" aria-orientation="horizontal"></div>
+          <div class="pane-header compact">
+            <h2>快速調整</h2>
+            <button class="collapse-toggle" type="button" data-collapse-target="quick" title="最小化快速調整">-</button>
+          </div>
+          <div id="quickActions" class="quick-actions"></div>
+          <div class="chat-input-row">
+            <textarea id="commandInput" placeholder="輸入指令，例如：請更堅定一點，並補上可洽詢電話。" spellcheck="false" maxlength="300" title="Enter 執行修訂草稿；Shift + Enter 換行"></textarea>
+            <span class="char-counter" data-counter-for="commandInput">0/300</span>
+            <span class="submit-hint">↵</span>
+          </div>
+        </aside>
+      </main>
+    </div>
+    <button id="quoteSelectionBtn" class="selection-quote-popover hidden" type="button" title="在快速調整提及" aria-label="在快速調整提及">在快速調整提及</button>
+    <script src="/app.js"></script>
+  </body>
+</html>
