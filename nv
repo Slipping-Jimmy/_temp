@@ -1,0 +1,26 @@
+# Copy this file to .env and set values that are reachable from the app container.
+# Do not commit the resulting .env file or transfer production secrets with this package.
+
+# Use a strong, deployment-specific password before the first startup.
+POSTGRES_PASSWORD=password
+
+# OpenAI-compatible model service on the internal network.
+OPENAI_BASE_URL=http://192.168.8.144:31002/v1
+OPENAI_API_KEY=dummy
+CHAT_MODEL=/workspace/llm_model
+
+# Customer reference-material retrieval service. It must accept POST /search.
+REFERENCE_SEARCH_URL=http://192.168.8.144:31101/search
+REFERENCE_SEARCH_MODE=vector
+REFERENCE_SEARCH_TOP_K=20
+
+# Bounded agentic retrieval settings.
+AGENTIC_RETRIEVAL_ENABLED=1
+AGENTIC_RETRIEVAL_MAX_ROUNDS=3
+AGENTIC_RETRIEVAL_MAX_EVIDENCE=6
+AGENTIC_RETRIEVAL_CONTEXT_CHARS=30000
+AGENTIC_RETRIEVAL_EVIDENCE_CHARS=6000
+
+# Host port exposed for the web UI and API.
+HOST_APP_PORT=26825
+APP_VERSION=0.0.1
