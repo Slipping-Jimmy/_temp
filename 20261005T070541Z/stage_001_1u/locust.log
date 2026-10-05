@@ -1,0 +1,7 @@
+[2026-10-05 15:05:42,250] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.main: Run time limit set to 300 seconds
+[2026-10-05 15:05:42,250] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.main: Starting Locust 2.24.1
+[2026-10-05 15:05:42,254] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.runners: Ramping to 1 users at a rate of 2.00 per second
+[2026-10-05 15:05:42,254] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.runners: All users spawned: {"MultimodalPlaygroundUser": 1} (1 total users)
+[2026-10-05 15:10:42,092] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.main: --run-time limit reached, shutting down
+[2026-10-05 15:10:47,949] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.main: writing html report to file: /home/aiadm/ModelUseData/ivan/multimodal_load_test/results/20261005T070541Z/stage_001_1u/locust_report.html
+[2026-10-05 15:10:47,953] H30LAIMGPU05.intra.nhi.gov.tw/INFO/locust.main: Shutting down (exit code 0)
