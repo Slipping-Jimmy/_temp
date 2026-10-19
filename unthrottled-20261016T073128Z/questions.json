@@ -1,0 +1,92 @@
+[
+  {
+    "id": "overall_binary",
+    "profiles": ["short", "mixed"],
+    "weight": 70,
+    "text": "請判斷這張人像照片是否符合證件照片規範。只輸出「符合」或「不符合」，不要解釋。"
+  },
+  {
+    "id": "frontal_pose",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "照片中的人物是否正面面向鏡頭？只回答「是」或「否」。"
+  },
+  {
+    "id": "gaze",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "照片中的人物是否直視鏡頭？只回答「是」或「否」。"
+  },
+  {
+    "id": "eyes_visible",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "照片中人物的雙眼是否張開且清楚可見？只回答「是」或「否」。"
+  },
+  {
+    "id": "expression",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "人物是否保持自然中性表情且沒有露齒？只回答「是」或「否」。"
+  },
+  {
+    "id": "lighting",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "人物臉部的光線是否均勻且沒有明顯陰影？只回答「是」或「否」。"
+  },
+  {
+    "id": "background",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "照片背景是否單純且均勻？只回答「是」或「否」。"
+  },
+  {
+    "id": "head_covering",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "人物是否沒有配戴帽子或其他頭部遮蔽物？只回答「是」或「否」。"
+  },
+  {
+    "id": "sunglasses",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "人物是否沒有配戴會遮住眼睛的太陽眼鏡？只回答「是」或「否」。"
+  },
+  {
+    "id": "focus",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "這張照片是否清晰對焦？只回答「是」或「否」。"
+  },
+  {
+    "id": "exposure",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "這張照片的曝光是否正常？只回答「是」或「否」。"
+  },
+  {
+    "id": "image_quality",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "照片是否沒有明顯像素化、過度飽和或色階斷裂？只回答「是」或「否」。"
+  },
+  {
+    "id": "face_size",
+    "profiles": ["mixed"],
+    "weight": 2,
+    "text": "人物臉部在照片中的尺寸與位置是否適合證件照？只回答「是」或「否」。"
+  },
+  {
+    "id": "brief_reasons_1",
+    "profiles": ["mixed"],
+    "weight": 3,
+    "text": "判斷這張照片是否符合證件照規範。若不符合，列出最多三項原因，每項不超過十個字。"
+  },
+  {
+    "id": "brief_reasons_2",
+    "profiles": ["mixed"],
+    "weight": 3,
+    "text": "請簡短檢查姿勢、視線、表情、背景及影像品質，回答是否合格並列出最多三項問題。"
+  }
+]
