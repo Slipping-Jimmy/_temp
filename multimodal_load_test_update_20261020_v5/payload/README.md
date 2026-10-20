@@ -134,7 +134,7 @@ DATASET_DIR=./data/tono
 | `PROMPT_PROFILE` | `short` 或 `mixed` |
 | `CONVERSATION_MODE` | `per_user`（預設，每個虛擬 user 重用 conversation）或 `per_request` |
 | `FIXED_CONVERSATION_ID` | 可選；所有請求使用一個已存在的 conversation ID |
-| `UNTHROTTLED_CONVERSATION_STRATEGY` | `shared`（預設，一個 conversation）、`pool` 或 `per_request`；僅供 `unthrottled_load.py` 使用 |
+| `UNTHROTTLED_CONVERSATION_STRATEGY` | `per_request`（`sse-burst` 容量測試建議）、`shared`（刻意測同一 conversation 併發寫入）或 `pool`；僅供 `unthrottled_load.py` 使用 |
 | `REQUEST_TIMEOUT_SECONDS` | 每個 HTTP/SSE request 的固定 timeout |
 | `SSE_MAX_TOTAL_SECONDS` | SSE 絕對執行上限；即使持續收到垃圾 chunk，超過此秒數也會中止 |
 | `REQUIRE_DONE_MARKER` | 預設 `1`；SSE 必須收到 `[DONE]`、`[END]` 或 recognized finish event |
@@ -169,7 +169,7 @@ ALLOW_RAW_STREAM=1
 
 `run_test.sh` 的 Locust users 是 **closed-loop**：每一個虛擬 user 都會等上一筆完整回覆後才送下一筆。因此它適合穩定使用者情境，但無法模擬廠商以同一 token 同時把多筆請求直接送進來。
 
-這個需求請使用 `unthrottled_load.py`。它使用同一個 `PLAYGROUND_TOKEN`，每筆 request 都產生唯一 `chat_id`，但不會等前一筆回覆完成。預設只建立一個 conversation、同時重用它（符合 API 可重用 conversation、chat ID 不可重複的規則），讓量測重點落在後端 / vLLM 回應能力。
+這個需求請使用 `unthrottled_load.py`。它使用同一個 `PLAYGROUND_TOKEN`，每筆 request 都產生唯一 `chat_id`，但不會等前一筆回覆完成。若目標是後端 / vLLM 容量，請設 `UNTHROTTLED_CONVERSATION_STRATEGY=per_request`：仍是同一廠商與同一 token，但每筆工作使用獨立 conversation，避免同一筆 conversation 的併發儲存鎖或競態污染模型容量曲線。
 
 若目標是單獨量測「模型佇列在同時收到幾筆時開始超過 60 秒」，優先使用
 **sse-burst**。它會先完成全部 attachment upload，確認 N 筆都準備成功後，等所有
@@ -194,11 +194,22 @@ python3 unthrottled_load.py \
 容量曲線的縱軸。`release_skew_ms` 可驗證實際同步誤差。準備階段的 conversation/upload
 耗時仍會保存，但不計入模型回答時間，且其錯誤不會被標成 60 秒模型 cutoff。
 
-容量測試必須把 `.env` 的 `FIXED_CONVERSATION_ID=` 留空。`shared` 策略會為每個 round
-建立一個新 conversation，該 round 內的 N 筆請求共用它；這可避免跨級別累積上下文，
-最後把「內容已達語言模型上限」誤認成負載上限。若 `FIXED_CONVERSATION_ID` 非空，
+容量測試必須把 `.env` 的 `FIXED_CONVERSATION_ID=` 留空，並使用：
+
+```dotenv
+UNTHROTTLED_CONVERSATION_STRATEGY=per_request
+```
+
+`sse-burst` 會在同步 barrier 放行前完成各自的 conversation 建立與 attachment upload，
+所以 `transaction_ms` 仍只量同步放行後的模型完整回答時間，conversation 建立成本不會進入
+這條容量曲線。若 `FIXED_CONVERSATION_ID` 非空，
 `sse-burst` 預設會拒絕啟動。只有刻意測 context limit 時才加
 `--allow-fixed-conversation`。
+
+若要重現「多筆 chat 同時寫進同一個 conversation」的應用行為，才改用 `shared`。
+這是一項獨立的 API／持久化層壓力測試：出現約 60 秒 SSE 沉默後的
+`sse_record_save_error`，應視為同 conversation 寫入可靠性問題，不能直接宣稱是 H200
+模型容量上限。
 
 若要測真實入口承受能力，則使用既有 **burst**；它會讓 upload＋SSE 完整流程同時開始：
 
@@ -238,13 +249,10 @@ python3 unthrottled_load.py \
 4. 如需持續流量上限，再以 open-loop 找出能持續送出的 rate。
 5. 在候選安全點以相同模式跑至少 30 分鐘，並保留 20–30% headroom 作為營運建議。
 
-如果實際服務每筆都必須使用獨立 conversation，才在 `.env` 設：
-
-```dotenv
-UNTHROTTLED_CONVERSATION_STRATEGY=per_request
-```
-
-這會把 conversation 建立成本也壓進測試，結果不可直接與預設 `shared` 模式相比。若需要多個固定 conversation，使用 `UNTHROTTLED_CONVERSATION_STRATEGY=pool` 及 `--conversation-pool-size N`。
+`per_request` 在 `burst`／`open-loop` 會把 conversation 建立納入完整入口負載；但在
+`sse-burst` 中，conversation 與 upload 都在 barrier 前準備完成，因此不納入同步 SSE
+回答時間。不同 strategy 的結果仍不可混成同一條曲線。若需要多個固定 conversation，
+使用 `UNTHROTTLED_CONVERSATION_STRATEGY=pool` 及 `--conversation-pool-size N`。
 
 ## 6. Locust closed-loop 正式執行
 

@@ -67,10 +67,11 @@ echo "Preserved: .env, data/, results/, .venv-loadtest/"
 echo
 echo "REQUIRED before sse-burst: edit $TARGET_DIR/.env and set:"
 echo "  FIXED_CONVERSATION_ID="
+echo "  UNTHROTTLED_CONVERSATION_STRATEGY=per_request"
 echo "  SSE_MAX_TOTAL_SECONDS=180"
 echo
 echo "Then run:"
 echo "  cd $TARGET_DIR"
 echo "  source .venv-loadtest/bin/activate"
-echo "  python3 unthrottled_load.py --config ./.env --output-root ./results sse-burst --concurrency '35 40 45 50 55 60' --rounds 3 --between-rounds 20s --prepare-workers 8"
+echo "  python3 unthrottled_load.py --config ./.env --output-root ./results sse-burst --concurrency '5 10 15 20 25 30 35 40 45 50' --rounds 3 --between-rounds 20s --prepare-workers 8"
 

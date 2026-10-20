@@ -12,7 +12,10 @@
 ## 修正內容
 
 - `sse-burst` 預設禁止使用 `FIXED_CONVERSATION_ID`，避免把 context limit 誤認成容量上限。
-- `shared` 模式每個 round 建立新的 conversation，該 round 內的 N 筆仍共用它。
+- `per_request` 改為 `sse-burst` 模型/GPU 容量測試的建議策略；每筆使用獨立
+  conversation，但 conversation 與 upload 都在同步放行 SSE 前完成，不會計入容量曲線。
+- `shared` 模式仍保留：每個 round 建立新的 conversation，該 round 內的 N 筆共用它，
+  用來刻意測試同一 conversation 的併發寫入與持久化可靠性。
 - 60 秒 cutoff 不再預設為 TTFT timeout；同時記錄 TTFT、完整 SSE 時間與最大 SSE
   事件空窗，再自動分類為 `first_token`、`total_request`、`idle_stream` 或
   `explicit_timeout`。
@@ -41,7 +44,7 @@ chmod +x apply_update.sh
 
 ```dotenv
 FIXED_CONVERSATION_ID=
-UNTHROTTLED_CONVERSATION_STRATEGY=shared
+UNTHROTTLED_CONVERSATION_STRATEGY=per_request
 SSE_MAX_TOTAL_SECONDS=180
 ```
 
@@ -50,7 +53,9 @@ SSE_MAX_TOTAL_SECONDS=180
 
 ## 下一輪
 
-前一輪正常的 35 筆請求仍只有約 3.66 秒 p95，沒有碰到 60 秒，因此從 35 往上測：
+先從 5 筆重新建立 `per_request` 基線，再每次增加 5 筆。先前 `shared` 測試在不同圖片、
+不同 conversation 上都曾出現「已收到模型內容後，SSE 沉默約 59 秒，最後回報無法儲存
+紀錄」；這比較像同一 conversation 的併發寫入／持久化問題，不應拿來當 H200 容量上限。
 
 ```bash
 cd ~/ModelUseData/ivan/multimodal_load_test
@@ -60,7 +65,7 @@ python3 unthrottled_load.py \
   --config ./.env \
   --output-root ./results \
   sse-burst \
-  --concurrency "35 40 45 50 55 60" \
+  --concurrency "5 10 15 20 25 30 35 40 45 50" \
   --rounds 3 \
   --between-rounds 20s \
   --prepare-workers 8
