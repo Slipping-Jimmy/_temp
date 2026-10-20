@@ -78,6 +78,7 @@ RECORD_FIELDS = [
     "upload_ms",
     "sse_headers_ms",
     "ttft_ms",
+    "first_token_within_60s",
     "max_sse_event_gap_ms",
     "sse_total_ms",
     "transaction_ms",
@@ -204,18 +205,19 @@ def numeric_value(record: dict[str, Any], field: str) -> float:
 
 
 def classify_60s_cutoff(record: dict[str, Any]) -> str:
-    """Classify an observed failure near 60 seconds without assuming timeout semantics.
+    """Identify the confirmed product limit: no first model token within 60s.
 
-    The product timeout may apply before first content, to the whole request, or to
-    an idle SSE stream.  We therefore retain all three timings and label the best
-    match.  This remains evidence of an observed boundary, not a root-cause claim.
+    Late first tokens count even if the stream eventually succeeds. Failures
+    before first content near 60s remain candidates pending server-log checks.
+    Post-token errors never count as this product timeout.
     """
-
-    if str(record.get("success", "0")) == "1":
-        return ""
     failure_phase = str(record.get("failure_phase", ""))
     if failure_phase in {"conversation", "upload", "preparation"}:
         return ""
+
+    ttft_ms = numeric_value(record, "ttft_ms")
+    if ttft_ms > 0:
+        return "first_token" if ttft_ms > 60_000 else ""
 
     error_type = str(record.get("error_type", "")).lower()
     message = str(record.get("error_message", "")).lower()
@@ -231,28 +233,16 @@ def classify_60s_cutoff(record: dict[str, Any]) -> str:
     if error_type in non_timeout_error_types or any(marker in message for marker in semantic_markers):
         return ""
 
-    duration_ms = record_duration_ms(record)
-    ttft_ms = numeric_value(record, "ttft_ms")
-    max_gap_ms = numeric_value(record, "max_sse_event_gap_ms")
-    timeout_words = ("timeout", "time out", "timed out", "逾時", "超時", "60 秒", "60秒")
-    explicit_timeout = any(word in message for word in timeout_words) or "timeout" in error_type
+    if str(record.get("success", "0")) == "1":
+        return ""
+    return "first_token" if 55_000 <= record_duration_ms(record) <= 75_000 else ""
 
-    # Use a narrow observation window around the documented 60-second boundary.
-    # This prevents a 120-second client read timeout or the 180-second safety cap
-    # from being misreported as the product's cutoff.
-    near_60 = 55_000 <= duration_ms <= 75_000
-    gap_near_60 = 55_000 <= max_gap_ms <= 75_000
-    if not near_60 and not gap_near_60:
-        return "explicit_timeout" if explicit_timeout and duration_ms <= 75_000 else ""
-    if ttft_ms <= 0:
-        return "first_token"
-    if 55_000 <= ttft_ms <= 75_000:
-        return "first_token"
-    if gap_near_60:
-        return "idle_stream"
-    if near_60:
-        return "total_request"
-    return "explicit_timeout" if explicit_timeout else ""
+
+def has_model_content(text: str) -> bool:
+    """Protocol-only prefixes must not start the model TTFT clock."""
+    for marker in ("[answer]", "[thought]", "[done]", "[end]"):
+        text = text.replace(marker, "").replace(marker.upper(), "")
+    return bool(text.strip())
 
 
 def is_60s_cutoff_candidate(record: dict[str, Any]) -> bool:
@@ -375,8 +365,21 @@ class CsvWriter:
         self.handle = self.path.open("w", newline="", encoding="utf-8")
         self.writer = csv.DictWriter(self.handle, fieldnames=RECORD_FIELDS, extrasaction="ignore")
         self.writer.writeheader()
+        self.sse_handle = None
+
+    def write_sse_line(self, record: dict[str, Any], elapsed_ms: float, line: str) -> None:
+        with self.lock:
+            if self.sse_handle is None:
+                self.sse_handle = self.path.with_name("sse_raw.jsonl").open("w", encoding="utf-8")
+            self.sse_handle.write(json.dumps({
+                "round": record["round"], "sequence": record["sequence"],
+                "chat_id": record["chat_id"], "elapsed_ms": round(elapsed_ms, 3),
+                "line": line,
+            }, ensure_ascii=False) + "\n")
 
     def write(self, record: dict[str, Any]) -> None:
+        ttft = numeric_value(record, "ttft_ms")
+        record["first_token_within_60s"] = int(0 < ttft <= 60_000)
         with self.lock:
             self.writer.writerow(record)
             self.handle.flush()
@@ -384,6 +387,8 @@ class CsvWriter:
     def close(self) -> None:
         with self.lock:
             self.handle.close()
+            if self.sse_handle is not None:
+                self.sse_handle.close()
 
 
 class TransactionClient:
@@ -616,6 +621,8 @@ class TransactionClient:
                         continue
                     if isinstance(raw_line, bytes):
                         raw_line = raw_line.decode("utf-8", errors="replace")
+                    if self.settings.capture_response:
+                        self.writer.write_sse_line(record, (time.perf_counter() - step) * 1000, raw_line)
                     line = raw_line.strip()
                     if line.startswith("data:"):
                         data = line[5:].strip()
@@ -638,7 +645,7 @@ class TransactionClient:
                         error_message = safe_preview(parsed["error"], 500)
                         return record
                     if parsed["text"]:
-                        if not response_text:
+                        if not record["ttft_ms"] and has_model_content(response_text + parsed["text"]):
                             record["ttft_ms"] = round((time.perf_counter() - step) * 1000, 3)
                         response_text += parsed["text"]
                         content_event_count += 1
@@ -939,6 +946,8 @@ class TransactionClient:
                         continue
                     if isinstance(raw_line, bytes):
                         raw_line = raw_line.decode("utf-8", errors="replace")
+                    if self.settings.capture_response:
+                        self.writer.write_sse_line(record, (time.perf_counter() - step) * 1000, raw_line)
                     line = raw_line.strip()
                     if line.startswith("data:"):
                         data = line[5:].strip()
@@ -961,7 +970,7 @@ class TransactionClient:
                         error_message = safe_preview(parsed["error"], 500)
                         return record
                     if parsed["text"]:
-                        if not response_text:
+                        if not record["ttft_ms"] and has_model_content(response_text + parsed["text"]):
                             record["ttft_ms"] = round((time.perf_counter() - step) * 1000, 3)
                         response_text += parsed["text"]
                         content_event_count += 1
@@ -1181,8 +1190,9 @@ def write_summary(result_root: Path, summaries: list[dict[str, Any]], config: di
             "- `sse_burst` uploads all attachments first and then releases all SSE/model requests together; its E2E values measure SSE release through complete model answer.",
             "- `open_loop` schedules at its target requests/s even while earlier jobs are still running.",
             "- `admission_limited > 0` means the client safety cap was reached; increase `--max-inflight` before treating that stage as a server capacity result.",
-            "- `cutoff_60s_candidates` is based on an observed failed request near 60 seconds or an explicit timeout; it does not assume whether the system limits TTFT, total request time, or SSE idle time.",
-            "- `timeout_basis_counts` separates `first_token`, `total_request`, `idle_stream`, and `explicit_timeout`. Confirm the final root cause with API/vLLM logs using the recorded trace IDs.",
+            "- `cutoff_60s_candidates` uses the confirmed first-token limit: TTFT > 60000 ms, or failure near 60s before any model content. Post-token failures remain errors but do not count as this cutoff.",
+            "- `timeout_basis_counts` reports `first_token`. Confirm candidates with API/vLLM logs. E2E measures completed answers and is not the timeout criterion.",
+            "- With CAPTURE_RESPONSE=1, `sse_raw.jsonl` stores received non-empty SSE lines with elapsed times and chat IDs, including event names and completion markers for parser diagnosis.",
             "- `answer_valid_rate_percent` checks whether a successful short-profile response is exactly `符合` or `不符合` after removing protocol markers.",
         ]
     )
@@ -1215,7 +1225,7 @@ def build_html_report(summaries: list[dict[str, Any]], run_id: str) -> str:
     observed_max = max(
         (value for values in series.values() for value in values if value is not None), default=0
     )
-    y_max = max(65.0, math.ceil(observed_max / 10) * 10)
+    y_max = max(1.0, math.ceil(observed_max))
 
     def x_pos(value: float) -> float:
         return left + (value - x_min) / (x_max - x_min) * plot_w
@@ -1229,10 +1239,7 @@ def build_html_report(summaries: list[dict[str, Any]], run_id: str) -> str:
         value = y_max * tick / 5
         y = y_pos(value)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{width-right}" y2="{y:.1f}" stroke="#e5e7eb"/>')
-        svg.append(f'<text x="{left-12}" y="{y+5:.1f}" text-anchor="end">{value:.0f}</text>')
-    cutoff_y = y_pos(60)
-    svg.append(f'<line x1="{left}" y1="{cutoff_y:.1f}" x2="{width-right}" y2="{cutoff_y:.1f}" stroke="#dc2626" stroke-width="2" stroke-dasharray="8 6"/>')
-    svg.append(f'<text x="{width-right-5}" y="{cutoff_y-8:.1f}" text-anchor="end" fill="#dc2626">60 秒 timeout</text>')
+        svg.append(f'<text x="{left-12}" y="{y+5:.1f}" text-anchor="end">{value:g}</text>')
     colors = {"mean": "#2563eb", "p95": "#f59e0b", "max": "#7c3aed"}
     labels = {"mean": "平均完整回答", "p95": "p95", "max": "最大值"}
     for key, values in series.items():
@@ -1279,7 +1286,7 @@ def build_html_report(summaries: list[dict[str, Any]], run_id: str) -> str:
         f"<td>{format_metric(row.get('max_release_skew_ms'))}</td></tr>"
         for row in rows
     )
-    return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(run_id)} 負載報告</title><style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 20px;color:#172033}}h1{{font-size:25px}}.card{{border:1px solid #dbe3ee;border-radius:12px;padding:18px;margin:18px 0;box-shadow:0 2px 10px #0000000d}}svg text{{font-size:13px;fill:#334155}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:right}}th:first-child,td:first-child{{text-align:left}}.note{{color:#475569}}</style></head><body><h1>同步批次容量報告</h1><p class="note">Run: {html.escape(run_id)}。紅色外框表示該級別有失敗；紅色虛線為 60 秒。timeout 類型由實際 TTFT、總時長與 SSE 最大空窗自動分類。</p><div class="card">{''.join(svg)}</div><div class="card"><table><thead><tr><th>並發數</th><th>成功/送出</th><th>平均 ms</th><th>p95 ms</th><th>最大 ms</th><th>60s timeout</th><th>判定依據</th><th>準備失敗</th><th>有效答案/成功</th><th>最大同步誤差 ms</th></tr></thead><tbody>{table_rows}</tbody></table></div></body></html>"""
+    return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(run_id)} 負載報告</title><style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 20px;color:#172033}}h1{{font-size:25px}}.card{{border:1px solid #dbe3ee;border-radius:12px;padding:18px;margin:18px 0;box-shadow:0 2px 10px #0000000d}}svg text{{font-size:13px;fill:#334155}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:right}}th:first-child,td:first-child{{text-align:left}}.note{{color:#475569}}</style></head><body><h1>同步批次容量報告</h1><p class="note">Run: {html.escape(run_id)}。60 秒 timeout 僅依首個模型 token 判定；完整回答時間另計。平均、p95 與最大值僅包含成功完成的回答；失敗數請同時參考下表。</p><div class="card">{''.join(svg)}</div><div class="card"><table><thead><tr><th>並發數</th><th>成功/送出</th><th>平均 ms</th><th>p95 ms</th><th>最大 ms</th><th>60s timeout</th><th>判定依據</th><th>準備失敗</th><th>有效答案/成功</th><th>最大同步誤差 ms</th></tr></thead><tbody>{table_rows}</tbody></table></div></body></html>"""
 
 
 def format_metric(value: Any) -> str:
@@ -1655,9 +1662,12 @@ def main() -> int:
                     max_inflight=max_seen,
                 )
             summaries.append(summary)
-            if args.mode == "sse-burst" and summary["failures"] and not args.continue_after_failure:
+            if (args.mode == "sse-burst" and
+                    (summary["failures"] or summary["cutoff_60s_candidates"]) and
+                    not args.continue_after_failure):
                 print(
-                    f"[{utc_now()}] Stopping after {stage}: {summary['failures']} failures "
+                    f"[{utc_now()}] Stopping after {stage}: {summary['failures']} failures, "
+                    f"{summary['cutoff_60s_candidates']} first-token cutoff candidates "
                     "(use --continue-after-failure to override)."
                 )
                 break

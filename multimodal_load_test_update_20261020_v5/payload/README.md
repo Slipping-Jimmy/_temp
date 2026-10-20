@@ -207,9 +207,20 @@ UNTHROTTLED_CONVERSATION_STRATEGY=per_request
 `--allow-fixed-conversation`。
 
 若要重現「多筆 chat 同時寫進同一個 conversation」的應用行為，才改用 `shared`。
-這是一項獨立的 API／持久化層壓力測試：出現約 60 秒 SSE 沉默後的
-`sse_record_save_error`，應視為同 conversation 寫入可靠性問題，不能直接宣稱是 H200
-模型容量上限。
+這是一項獨立的 API 壓力測試：出現約 60 秒 SSE 沉默後的
+`sse_record_save_error` 時，需要以原始 SSE 與後端 log 確認原因。
+同 conversation 寫入競態只是待驗證假設，並非已確認的根因。
+
+系統已確認的限制為「request 發出後 60 秒內沒有第一個模型 token」。因此
+`cutoff_60s_candidates` 僅包含 TTFT 超過 60 秒，或尚未收到模型內容就在約 60 秒失敗
+的候選。已收到首 token 後的儲存錯誤或串流停頓，仍保留為失敗，但不算此項 timeout。
+`first_token_within_60s` 記錄是否及時收到模型內容；它與 `success`、`completion_marker`
+各自獨立，不會收到第一個 token 就宣告完整回答成功。
+
+`CAPTURE_RESPONSE=1` 時，每個 stage 另有 `sse_raw.jsonl`，保留非空 SSE 原始行、
+接收時間、round、sequence 與 chat ID，包括 `event:` 行及完成標記。
+若懷疑 API 已送完回答而程式漏判完成，請依此核對 API 的完成格式；不能僅憑短答案
+或首 token 到達就提前關閉連線。只有成功完成的回答納入平均完整回答時間。
 
 若要測真實入口承受能力，則使用既有 **burst**；它會讓 upload＋SSE 完整流程同時開始：
 
@@ -347,13 +358,13 @@ results/<run_id>/
 - conversation ID、唯一 chat ID、attachment ID，以及 API 回傳的 request/correlation trace ID。
 - conversation、upload、SSE status 與 latency。
 - SSE headers time、TTFT、SSE 事件最大空窗、完整 SSE time、完整 transaction time。
-- `timeout_basis`：把約 60 秒失敗自動分成 `first_token`、`total_request`、
-  `idle_stream` 或 `explicit_timeout`；不需預先知道後端 timeout 套在哪一層。
+- `timeout_basis`：僅以 `first_token` 標記首 token 超過 60 秒或尚無 token 的約 60 秒失敗候選。
 - `sse-burst` 的 preparation 狀態、同步放行時間及 `release_skew_ms`。
 - `answer_valid` 與 `normalized_answer`；short profile 只有嚴格輸出「符合」或「不符合」才算有效答案。
 - content event 數、回覆字數、completion marker。
 - 明確的 error type 與截短錯誤內容。
-- 最多五個截短後的 SSE 原始事件，供 smoke test 診斷格式；可用 `CAPTURE_RESPONSE=0` 關閉。
+- CSV 保存最多五個截短後的 SSE 事件；`sse_raw.jsonl` 保存非空原始行供核對完成格式，
+  兩者皆可用 `CAPTURE_RESPONSE=0` 關閉。
 
 `sse_event_count` 不是 token 數。真正 token throughput 只從 vLLM metrics 計算。
 
@@ -386,11 +397,8 @@ MAX_P95_TOTAL_MS=10000
 - 大量重複使用同一張圖片可能觸發 multimodal cache。manifest 快照可用來檢查圖片分布。
 - load generator CPU 建議低於 70%；若 Locust 出現 CPU warning，結果代表 client 上限，不是 H200 上限。
 - `response_preview` 預設保存最多 500 字。若輸入不是合成資料或回覆可能含敏感資訊，將 `CAPTURE_RESPONSE=0`。
-- `unthrottled_load.py` 的 `cutoff_60s_candidates` 是依「實際失敗且發生在約 55–75 秒」
-  或明確 timeout 字樣標記的候選值。程式會同時保留 TTFT、總時長和最大 SSE 空窗，
-  不會先假設 60 秒限制是 TTFT、total request 或 idle timeout，也不會自行斷言是
-  vLLM、API 或 proxy 所造成。
-- `client_sse_absolute_timeout` 是測試端 `SSE_MAX_TOTAL_SECONDS` 的安全中止，不會被列為
-  系統 60 秒 cutoff；context/token 上限等語意錯誤也會排除。`sse_record_save_error`
-  若很快發生，只算 API 儲存錯誤；若已收到首 token、接著 SSE 沉默約 60 秒才出現，
-  則會標為 `idle_stream` 候選，同時保留原始錯誤類型供後端追查。
+- `cutoff_60s_candidates` 依已確認的首 token 限制判定；仍需後端 log 確認失敗根因。
+  TTFT 超過 60 秒的成功回答也會標記超限，並於該級結束後停止升壓。
+- 首 token 及時到達後的 `sse_record_save_error` 不會標成 60 秒 cutoff。
+  120 秒 client read timeout 與 180 秒測試安全上限也不冒充約 60 秒的系統斷線。
+  其他錯誤仍會停止升壓，避免把未完成回答的資料當作完整容量曲線。

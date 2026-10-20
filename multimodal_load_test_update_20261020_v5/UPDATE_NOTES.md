@@ -16,14 +16,15 @@
   conversation，但 conversation 與 upload 都在同步放行 SSE 前完成，不會計入容量曲線。
 - `shared` 模式仍保留：每個 round 建立新的 conversation，該 round 內的 N 筆共用它，
   用來刻意測試同一 conversation 的併發寫入與持久化可靠性。
-- 60 秒 cutoff 不再預設為 TTFT timeout；同時記錄 TTFT、完整 SSE 時間與最大 SSE
-  事件空窗，再自動分類為 `first_token`、`total_request`、`idle_stream` 或
-  `explicit_timeout`。
-- 只有實際失敗發生在約 55–75 秒或收到明確 timeout 才列為候選；120 秒 client read
-  timeout、180 秒測試端安全中止與 context/token 上限錯誤不會冒充系統 60 秒 cutoff。
-- `sse_record_save_error` 若很快發生，只算後端紀錄持久化失敗；若已收到首 token、
-  接著 SSE 沉默約 60 秒才出現，則標成 `idle_stream` 候選，並同時保留儲存錯誤供追查。
-- 已快速收到內容、最後才發生 context/error 的串流不再算 60 秒 cutoff。
+- 同事已確認系統限制為「request 發出後 60 秒內沒有第一個模型 token」。容量 cutoff
+  改為只依首 token：TTFT 超過 60 秒，或沒有模型內容且在約 55–75 秒失敗的候選。
+- 首 token 及時到達後的儲存錯誤／SSE 空窗保留為失敗，不列入此項 60 秒 timeout。
+  TTFT 超過 60 秒，即使最後完成回答，也會列入超限候選。
+- 新增 `first_token_within_60s`，與完整回答的 `success`／`completion_marker` 分開記錄。
+- `CAPTURE_RESPONSE=1` 額外保存每級 `sse_raw.jsonl`，包括 SSE 事件名稱、原始資料行、
+  完成標記、接收時間與 chat ID，用來核對是否有未辨識的 API 完成格式。
+- 單獨的 `[answer]`／`[thought]` 前綴不當作模型首 token；目前仍等待已辨識完成訊號，
+  不會收到首 token 就提前關閉串流。完整回答圖移除 60 秒水平線，避免混淆兩項指標。
 - 修正成功 round 被錯寫成 `round_valid=0` 的問題。
 - 新增 `SSE_MAX_TOTAL_SECONDS`，預設 180 秒；持續送垃圾 chunk 也不能無限掛住。
 - 新增 `answer_valid`、`normalized_answer` 和每級有效答案率。short profile 必須嚴格輸出
@@ -55,7 +56,8 @@ SSE_MAX_TOTAL_SECONDS=180
 
 先從 5 筆重新建立 `per_request` 基線，再每次增加 5 筆。先前 `shared` 測試在不同圖片、
 不同 conversation 上都曾出現「已收到模型內容後，SSE 沉默約 59 秒，最後回報無法儲存
-紀錄」；這比較像同一 conversation 的併發寫入／持久化問題，不應拿來當 H200 容量上限。
+紀錄」。這兩筆已有及時首 token，因此不屬於本次已確認的首 token timeout。
+先前推測的併發寫入競態仍待後端 log 驗證；也需要核對原始 SSE 的完成訊號。
 
 ```bash
 cd ~/ModelUseData/ivan/multimodal_load_test
@@ -73,5 +75,6 @@ python3 unthrottled_load.py \
 
 第一個出現 transport/SSE 失敗的級別仍會停止。若是 60 秒 cutoff，`summary.csv` 的
 `cutoff_60s_candidates` 會大於 0，並可從 `timeout_basis_counts` 看判定依據；逐筆資料則看
-`ttft_ms`、`sse_total_ms`、`max_sse_event_gap_ms` 與 `timeout_basis`。答案格式品質另外看
+`ttft_ms`、`first_token_within_60s`、`sse_total_ms`、`max_sse_event_gap_ms` 與
+`timeout_basis`（僅 `first_token`）。答案格式品質另外看
 `answer_valid_rate_percent`。

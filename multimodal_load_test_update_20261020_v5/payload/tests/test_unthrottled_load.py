@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import json
+import csv
 import tempfile
 import threading
 import time
@@ -12,8 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from unthrottled_load import (  # noqa: E402
     BurstRelease,
+    CsvWriter,
     build_html_report,
     classify_60s_cutoff,
+    has_model_content,
     is_60s_cutoff_candidate,
     normalize_binary_answer,
     parse_dotenv,
@@ -48,7 +52,7 @@ class UnthrottledLoadTests(unittest.TestCase):
             )
         )
 
-    def test_cutoff_basis_does_not_assume_ttft(self):
+    def test_cutoff_uses_confirmed_first_token_limit(self):
         self.assertEqual(
             classify_60s_cutoff(
                 {
@@ -71,7 +75,7 @@ class UnthrottledLoadTests(unittest.TestCase):
                     "failure_phase": "sse",
                 }
             ),
-            "total_request",
+            "",
         )
         self.assertEqual(
             classify_60s_cutoff(
@@ -83,7 +87,7 @@ class UnthrottledLoadTests(unittest.TestCase):
                     "failure_phase": "sse",
                 }
             ),
-            "idle_stream",
+            "",
         )
         self.assertEqual(
             classify_60s_cutoff(
@@ -124,9 +128,9 @@ class UnthrottledLoadTests(unittest.TestCase):
                     "failure_phase": "sse",
                 }
             ),
-            "idle_stream",
+            "",
         )
-        self.assertTrue(
+        self.assertFalse(
             is_60s_cutoff_candidate(
                 {"success": 0, "transaction_ms": 100, "error_message": "upstream timeout"}
             )
@@ -171,6 +175,31 @@ class UnthrottledLoadTests(unittest.TestCase):
         self.assertEqual(normalize_binary_answer(" [ANSWER] 不符合 [END] "), "不符合")
         self.assertEqual(normalize_binary_answer("L不符合"), "")
         self.assertEqual(normalize_binary_answer("符合，因為照片清楚"), "")
+
+    def test_protocol_markers_are_not_model_tokens(self):
+        self.assertFalse(has_model_content("[answer] [THOUGHT]"))
+        self.assertTrue(has_model_content("[answer]符合"))
+
+    def test_raw_sse_capture_keeps_event_names_and_completion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "transactions.csv"
+            writer = CsvWriter(path)
+            record = {"round": 1, "sequence": 2, "chat_id": "test-chat", "ttft_ms": 458}
+            writer.write_sse_line(record, 460, "event: custom_completed")
+            writer.write_sse_line(record, 461, "data: [DONE]")
+            writer.write(record)
+            writer.close()
+            events = [json.loads(line) for line in path.with_name("sse_raw.jsonl").read_text().splitlines()]
+            self.assertEqual([event["line"] for event in events],
+                             ["event: custom_completed", "data: [DONE]"])
+            self.assertEqual(events[0]["chat_id"], "test-chat")
+            with path.open() as handle:
+                self.assertEqual(next(csv.DictReader(handle))["first_token_within_60s"], "1")
+
+    def test_late_token_counts_even_if_answer_eventually_completes(self):
+        self.assertEqual(classify_60s_cutoff({"success": 1, "ttft_ms": 60001}), "first_token")
+        self.assertEqual(classify_60s_cutoff({"success": 0, "ttft_ms": 59999,
+                                           "sse_total_ms": 60100}), "")
 
     def test_stage_summary_keeps_cutoff_count(self):
         summary = stage_summary(
