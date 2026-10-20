@@ -18,8 +18,8 @@
   `explicit_timeout`。
 - 只有實際失敗發生在約 55–75 秒或收到明確 timeout 才列為候選；120 秒 client read
   timeout、180 秒測試端安全中止與 context/token 上限錯誤不會冒充系統 60 秒 cutoff。
-- `sse_record_save_error` 是後端紀錄持久化失敗；即使剛好在約 60 秒出現，也不會標成
-  `idle_stream` timeout，但仍保留為 API 失敗供另外追查。
+- `sse_record_save_error` 若很快發生，只算後端紀錄持久化失敗；若已收到首 token、
+  接著 SSE 沉默約 60 秒才出現，則標成 `idle_stream` 候選，並同時保留儲存錯誤供追查。
 - 已快速收到內容、最後才發生 context/error 的串流不再算 60 秒 cutoff。
 - 修正成功 round 被錯寫成 `round_valid=0` 的問題。
 - 新增 `SSE_MAX_TOTAL_SECONDS`，預設 180 秒；持續送垃圾 chunk 也不能無限掛住。

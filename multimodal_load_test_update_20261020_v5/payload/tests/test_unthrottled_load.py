@@ -102,6 +102,20 @@ class UnthrottledLoadTests(unittest.TestCase):
             classify_60s_cutoff(
                 {
                     "success": 0,
+                    "sse_total_ms": 1_100,
+                    "ttft_ms": 400,
+                    "max_sse_event_gap_ms": 500,
+                    "error_type": "sse_record_save_error",
+                    "error_message": "無法儲存紀錄",
+                    "failure_phase": "sse",
+                }
+            ),
+            "",
+        )
+        self.assertEqual(
+            classify_60s_cutoff(
+                {
+                    "success": 0,
                     "sse_total_ms": 60_100,
                     "ttft_ms": 1_000,
                     "max_sse_event_gap_ms": 59_000,
@@ -110,7 +124,7 @@ class UnthrottledLoadTests(unittest.TestCase):
                     "failure_phase": "sse",
                 }
             ),
-            "",
+            "idle_stream",
         )
         self.assertTrue(
             is_60s_cutoff_candidate(

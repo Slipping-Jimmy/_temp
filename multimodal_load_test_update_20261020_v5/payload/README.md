@@ -383,5 +383,6 @@ MAX_P95_TOTAL_MS=10000
   不會先假設 60 秒限制是 TTFT、total request 或 idle timeout，也不會自行斷言是
   vLLM、API 或 proxy 所造成。
 - `client_sse_absolute_timeout` 是測試端 `SSE_MAX_TOTAL_SECONDS` 的安全中止，不會被列為
-  系統 60 秒 cutoff；context/token 上限及 `sse_record_save_error` 等明確非 timeout
-  錯誤也會排除。儲存錯誤仍是有效的 API 失敗，會留在錯誤統計中供另外追查。
+  系統 60 秒 cutoff；context/token 上限等語意錯誤也會排除。`sse_record_save_error`
+  若很快發生，只算 API 儲存錯誤；若已收到首 token、接著 SSE 沉默約 60 秒才出現，
+  則會標為 `idle_stream` 候選，同時保留原始錯誤類型供後端追查。

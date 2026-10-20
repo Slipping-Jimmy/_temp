@@ -227,12 +227,7 @@ def classify_60s_cutoff(record: dict[str, Any]) -> str:
         "maximum context",
         "token limit",
     )
-    non_timeout_error_types = {
-        "client_sse_absolute_timeout",
-        # The application explicitly reported a persistence failure.  A long idle
-        # period before this event does not turn it into the product's 60s timeout.
-        "sse_record_save_error",
-    }
+    non_timeout_error_types = {"client_sse_absolute_timeout"}
     if error_type in non_timeout_error_types or any(marker in message for marker in semantic_markers):
         return ""
 
