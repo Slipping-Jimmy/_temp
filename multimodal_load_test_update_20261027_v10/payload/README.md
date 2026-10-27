@@ -1,0 +1,479 @@
+# Multimodal Playground Load Test
+
+這是一個可單獨複製到內網執行的端到端負載測試資料夾。它測量以下完整流程：
+
+1. 建立 conversation。
+2. 上傳一張圖片。
+3. 發出 multimodal chat SSE 請求。
+4. 讀取第一段模型文字及完整回覆。
+5. 保存逐筆結果、Locust 統計，以及可選的 vLLM/GPU telemetry。
+
+目前的可攜版本已包含 TONO single 與 mixed 資料，共 4,672 張圖片；來源、checksum、驗證方式、授權及引用資訊記錄於 [`data/DATASET_NOTICE.md`](data/DATASET_NOTICE.md)。TONO 授權為 CC BY-NC 4.0，使用前仍須確認本次內部用途符合非商業限制。
+
+## 資料夾內容
+
+```text
+multimodal_load_test/
+├── .env.example
+├── README.md
+├── requirements.txt
+├── questions.json
+├── images_manifest.csv
+├── data/
+│   ├── DATASET_NOTICE.md
+│   └── tono/
+│       ├── release/          # 4,569 single-violation images
+│       └── release_mixed/    # 103 mixed-violation images
+├── wheelhouse/
+│   └── cp39-manylinux2014-x86_64/  # 完整離線安裝 wheels
+├── build_manifest.py
+├── locustfile.py
+├── collect_metrics.py
+├── run_test.sh
+├── unthrottled_load.py        # 同一 token 不等待回覆的 burst / open-loop 工具
+├── analyze_results.py
+├── loadtest_lib.py
+└── tests/
+```
+
+`.env`、圖片、token 與測試結果預設都不會被 Git 追蹤；但圖片實體已放在此可攜資料夾中，直接複製整個資料夾即可帶入內網。
+
+## 1. 安裝
+
+建議在獨立 load-generator 主機執行，不要與 H200/vLLM 共用 CPU、RAM 或網路資源。
+
+若內網主機與準備時確認的環境相同（CPython 3.9、Linux x86-64、glibc 2.17 以上），直接使用隨附 wheelhouse，不需連接套件站，也不需編譯 gevent：
+
+```bash
+cd multimodal_load_test
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install \
+  --no-index \
+  --find-links ./wheelhouse/cp39-manylinux2014-x86_64 \
+  "pip==24.0"
+python3 -m pip install \
+  --no-index \
+  --find-links ./wheelhouse/cp39-manylinux2014-x86_64 \
+  -r requirements.txt
+```
+
+可先用以下命令確認環境：
+
+```bash
+python3 --version
+uname -m
+ldd --version | head -n 1
+```
+
+如果不是 Python 3.9 x86-64，才使用可連套件站的安裝方式：
+
+```bash
+cd multimodal_load_test
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+支援 Python 3.10 以上。正式執行前可驗證工具：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## 2. 資料集與 manifest
+
+目前資料已放在：
+
+```text
+data/tono/
+```
+
+對應 manifest 已建立為：
+
+```text
+images_manifest.csv
+```
+
+因此使用隨附資料時不需再下載、解壓或建立 manifest。也可以改用任意其他資料集位置，之後在 `.env` 設定絕對路徑並重新建立 manifest。
+
+重新建立 manifest：
+
+```bash
+python3 build_manifest.py ./data/tono --output ./images_manifest.csv
+```
+
+manifest 會保存相對路徑、類別、single/mixed、解析度、格式、大小、SHA-256 與圖片是否可解碼。壓測只會使用 `valid=1` 且實際存在的檔案。
+
+若 manifest 不存在，`run_test.sh` 會在第一次執行時自動建立。
+
+## 3. 設定
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+至少修改：
+
+```dotenv
+PLAYGROUND_BASE_URL=http://內網主機:port
+PLAYGROUND_TOKEN=新的短效測試token
+DATASET_DIR=./data/tono
+```
+
+不要沿用曾貼在聊天、郵件或 issue 中的 token，也不要把 `.env` 放進結果資料夾。
+
+重要參數：
+
+| 參數 | 用途 |
+|---|---|
+| `USERS_STEPS` | 依序執行的 Locust concurrency，例如 `"1 2 4 8 16 32"` |
+| `SPAWN_RATE` | 每秒啟動的 users |
+| `RUN_TIME` | 每個級別持續時間，例如 `5m` |
+| `PROMPT_PROFILE` | `short` 或 `mixed` |
+| `CONVERSATION_MODE` | `per_user`（預設，每個虛擬 user 重用 conversation）或 `per_request` |
+| `FIXED_CONVERSATION_ID` | 可選；所有請求使用一個已存在的 conversation ID |
+| `UNTHROTTLED_CONVERSATION_STRATEGY` | `per_request`（`sse-burst` 容量測試建議）、`shared`（刻意測同一 conversation 併發寫入）或 `pool`；僅供 `unthrottled_load.py` 使用 |
+| `REQUEST_TIMEOUT_SECONDS` | 每個 HTTP/SSE request 的固定 timeout |
+| `SSE_MAX_TOTAL_SECONDS` | SSE 絕對執行上限；即使持續收到垃圾 chunk，超過此秒數也會中止 |
+| `REQUIRE_DONE_MARKER` | 預設 `1`；SSE 必須收到 `[DONE]`、`[END]` 或 recognized finish event |
+| `CAPTURE_RESPONSE` | 是否在逐筆 CSV 保存截短後的模型回覆 |
+| `VLLM_METRICS_URL` | 可選的 vLLM `/metrics` URL |
+| `COLLECT_LOCAL_GPU` | load test 若直接跑在 H200 主機才設為 `1` |
+
+建議正式測試前確認 H200 環境沒有其他流量，並先記錄模型、vLLM、driver、CUDA 和容器版本。這些設定不需調整，但解讀結果時需要知道。
+
+## 4. Smoke test
+
+Smoke 模式會覆寫成 1 user、1 分鐘：
+
+```bash
+./run_test.sh ./.env --smoke
+```
+
+完成後檢查：
+
+- conversation、attachment、SSE 都是成功狀態。
+- `ttft_ms` 有值。
+- `response_preview` 是真正模型內容，不是 status event。
+- `completion_marker=1`，且回覆不包含 `[ERROR]`。
+
+如果 SSE 並非標準 `data:` 格式，而是每行直接傳文字，可以在 `.env` 加上：
+
+```dotenv
+ALLOW_RAW_STREAM=1
+```
+
+## 5. 同一廠商「不等回覆一直送」的上限測試
+
+### v10 解析與計時修正
+
+啟動訊息與 run_config.txt 會記錄 `20261027-v10`。生成參數沿用 v9。
+
+- 以完整 SSE event 解析多行 data，支援 event: completed / done / end 與 error。
+  數字、JSON 字串／陣列及非協定 JSON 物件都保留，空白不再被 strip 掉。
+- 原文不改動；只有 TTFT／二元答案驗證會將字面 ↵／␣ 解讀成換行／空白，
+  純控制前綴與空白不啟動首 token 計時，也不能單獨構成成功回答。
+- HTTP headers／body 讀取都受絕對 SSE 時間上限控制；每筆請求多一個 daemon reader
+  及有界佇列，不再只在收到新行時檢查。取消時嘗試關閉底層 socket；不支援該 socket
+  路徑的傳輸由 reader 的 read timeout 最終回收，但測試呼叫端仍會按絕對期限返回。
+  此版本有不同的 client 開銷，重測時請留意 load generator CPU、thread 與同步誤差。
+- raw 記錄現在包含事件分隔空行。新增 sse_nonempty_line_count、sse_data_line_count、
+  sse_heartbeat_line_count，可區分完全無行、只有 heartbeat 與有 data 但沒有有效內容。
+  max_sse_event_gap_ms 現在計入 heartbeat；它不再代表「模型內容的最大空窗」。
+- TTFT 從 reader 實際發起 HTTP 請求開始；request_dispatch_skew_ms 另外記錄
+  實際請求發起相對同步放行的誤差，summary 有 max_request_dispatch_skew_ms。
+- API 若回傳 finish_reason=length/max_tokens，記錄 sse_output_length_limit，不算正常完成。
+  只有 [END] 而沒有 finish_reason 時，client 無法自行判斷是否因 token 上限結束。
+- 原有完整回答時間只含成功請求。新增 all-request TTFT 表格與 mean_all_ttft_ms、
+  p95_all_ttft_ms、max_all_ttft_ms，涵蓋收到首 token 的失敗請求；未收到 token 者另列，
+  不當成 0 ms。首 token 超限候選仍不等於已證實的後端 timeout。
+
+目前修正主要套用 unthrottled_load.py 的三種模式；共享 loadtest_lib.py 也更新解析器，
+但 Locust 的 locustfile.py 串流主迴圈未改成此新版 deadline/framing，請使用 sse-burst 重測。
+
+### Gemma 4 31B 生成參數重測
+
+`unthrottled_load.py` 將下列設定作為 `llm_argument` 傳給 API，適用於 burst、sse-burst
+及 open-loop。既有 `.env` 沒有此欄位也會使用新預設；建議明確設定以便比對：
+
+```dotenv
+LLM_ARGUMENT_JSON='{"max_tokens":1024,"temperature":1.0,"top_p":0.95,"presence_penalty":0.2,"enable_thinking":false}'
+```
+
+其中 temperature/top_p 參考 [Google Gemma 4 官方採樣基線](https://ai.google.dev/gemma/docs/core/model_card_4#best-practices)。
+本輪只傳五個欄位，frequency_penalty 完全省略；不傳 top_k 或 repetition_penalty。
+1024 是本次測試輸出上限；presence_penalty=0.2 是降低重複生成的實驗值，非官方指定值，
+不保證消除迴圈。可覆寫 `{"presence_penalty":0.0}` 作對照，其他欄位沿用預設。
+啟動時會印出要求的參數，並存入 `run_config.txt` 的 `LLM_ARGUMENT_JSON_REQUESTED`。
+此紀錄只證明 client 有傳送；後端仍需確認參數生效，並正確將 enable_thinking 套到
+Gemma 4 chat template。程式不會在被拒絕後默默移除參數重試。
+若曾依 v7/v8 填入 LLM_ARGUMENT_JSON，請移除其中的 top_k/repetition_penalty 及
+frequency_penalty；presence_penalty=0.0 也會覆蓋新預設，請明確改成 0.2。
+省略 frequency_penalty 是不向 API 指定該參數，後端實際預設值仍由後端決定。
+
+先用 5、10、20 並發驗證，再從低級別重新建立曲線。設定改變後，結果不能與舊的
+生成參數混成同一條曲線。不要在壓測仍執行時編輯設定；每次啟動只讀取一次。
+請同時檢查嚴格答案格式、完整完成率與 `finish_reason`（若 API 有回傳）：達到
+max_tokens 是長度截斷，不代表正常完成了符合要求的答案。
+
+`run_test.sh` 的 Locust users 是 **closed-loop**：每一個虛擬 user 都會等上一筆完整回覆後才送下一筆。因此它適合穩定使用者情境，但無法模擬廠商以同一 token 同時把多筆請求直接送進來。
+
+這個需求請使用 `unthrottled_load.py`。它使用同一個 `PLAYGROUND_TOKEN`，每筆 request 都產生唯一 `chat_id`，但不會等前一筆回覆完成。若目標是後端 / vLLM 容量，請設 `UNTHROTTLED_CONVERSATION_STRATEGY=per_request`：仍是同一廠商與同一 token，但每筆工作使用獨立 conversation，避免同一筆 conversation 的併發儲存鎖或競態污染模型容量曲線。
+
+若目標是單獨量測「模型佇列在同時收到幾筆時開始超過 60 秒」，優先使用
+**sse-burst**。它會先完成全部 attachment upload，確認 N 筆都準備成功後，等所有
+worker 抵達同步 barrier，再同時放行 N 筆 SSE。建議依需求每次增加 5 筆：
+
+```bash
+python3 unthrottled_load.py \
+  --config ./.env \
+  --output-root ./results \
+  sse-burst \
+  --concurrency "1 5 10 15 20 25 30 35 40 45 50" \
+  --rounds 5 \
+  --between-rounds 20s \
+  --prepare-workers 8
+```
+
+預設只要某個級別有任何失敗，就不再執行後面的更高級別，避免已經碰到上限後仍持續
+壓服務。若只是除錯並確定要繼續，可加 `--continue-after-failure`。任一 attachment
+準備失敗時，該 round 整批取消，不會偷偷用較少的 SSE 數量冒充原定級別。
+
+`sse-burst` 的 `transaction_ms` 從同步放行 SSE 開始，算到完整模型回答結束；這就是
+容量曲線的縱軸。`release_skew_ms` 可驗證實際同步誤差。準備階段的 conversation/upload
+耗時仍會保存，但不計入模型回答時間，且其錯誤不會被標成 60 秒模型 cutoff。
+
+容量測試必須把 `.env` 的 `FIXED_CONVERSATION_ID=` 留空，並使用：
+
+```dotenv
+UNTHROTTLED_CONVERSATION_STRATEGY=per_request
+```
+
+`sse-burst` 會在同步 barrier 放行前完成各自的 conversation 建立與 attachment upload，
+所以 `transaction_ms` 仍只量同步放行後的模型完整回答時間，conversation 建立成本不會進入
+這條容量曲線。若 `FIXED_CONVERSATION_ID` 非空，
+`sse-burst` 預設會拒絕啟動。只有刻意測 context limit 時才加
+`--allow-fixed-conversation`。
+
+若要重現「多筆 chat 同時寫進同一個 conversation」的應用行為，才改用 `shared`。
+這是一項獨立的 API 壓力測試：出現約 60 秒 SSE 沉默後的
+`sse_record_save_error` 時，需要以原始 SSE 與後端 log 確認原因。
+同 conversation 寫入競態只是待驗證假設，並非已確認的根因。
+
+系統已確認的限制為「request 發出後 60 秒內沒有第一個模型 token」。因此
+`cutoff_60s_candidates` 僅包含 TTFT 超過 60 秒，或尚未收到模型內容就在約 60 秒失敗
+的候選。已收到首 token 後的儲存錯誤或串流停頓，仍保留為失敗，但不算此項 timeout。
+`first_token_within_60s` 記錄是否及時收到模型內容；它與 `success`、`completion_marker`
+各自獨立，不會收到第一個 token 就宣告完整回答成功。
+
+`CAPTURE_RESPONSE=1` 時，每個 stage 另有 `sse_raw.jsonl`，保留 SSE 原始行與事件分隔空行、
+接收時間、round、sequence 與 chat ID，包括 `event:` 行及完成標記。
+若懷疑 API 已送完回答而程式漏判完成，請依此核對 API 的完成格式；不能僅憑短答案
+或首 token 到達就提前關閉連線。只有成功完成的回答納入平均完整回答時間。
+
+若要測真實入口承受能力，則使用既有 **burst**；它會讓 upload＋SSE 完整流程同時開始：
+
+```bash
+python3 unthrottled_load.py \
+  --config ./.env \
+  --output-root ./results \
+  burst \
+  --concurrency "8 16 24 32 40 48" \
+  --rounds 5 \
+  --between-rounds 20s
+```
+
+每個級別會同時啟動 N 個完整流程、等這一輪全部完成，再等 20 秒進入下一輪。它包含
+attachment API 的影響，因此應與 `sse-burst` 分開解讀。
+
+再用 **open-loop** 找出「持續狂送」的可承受 request rate。此模式按固定速率排程，不會因模型變慢而自動降速：
+
+```bash
+python3 unthrottled_load.py \
+  --config ./.env \
+  --output-root ./results \
+  open-loop \
+  --arrival-rates "2 4 6 8 10" \
+  --duration 5m \
+  --max-inflight 128 \
+  --conversation-pool-size 1
+```
+
+`--max-inflight` 是 **load generator 的保護上限**，不是伺服器容量；若 `summary.csv` 出現 `admission_limited > 0`，代表 client 已阻擋部分排程，必須提高此值或降低 rate，該級別不能拿來宣稱是伺服器極限。
+
+判讀順序如下：
+
+1. 以 `sse-burst` 每 5 筆增加，找到第一個出現 `cutoff_60s_candidates > 0` 或 SSE 失敗的 concurrent request 數。
+2. 在該區間前後逐筆加密，例如已知 35 成功、40 失敗，就測 `36 37 38 39 40`。
+3. 以 `burst` 重測候選級別，確認完整 upload＋SSE 路徑下的真實入口表現。
+4. 如需持續流量上限，再以 open-loop 找出能持續送出的 rate。
+5. 在候選安全點以相同模式跑至少 30 分鐘，並保留 20–30% headroom 作為營運建議。
+
+`per_request` 在 `burst`／`open-loop` 會把 conversation 建立納入完整入口負載；但在
+`sse-burst` 中，conversation 與 upload 都在 barrier 前準備完成，因此不納入同步 SSE
+回答時間。不同 strategy 的結果仍不可混成同一條曲線。若需要多個固定 conversation，
+使用 `UNTHROTTLED_CONVERSATION_STRATEGY=pool` 及 `--conversation-pool-size N`。
+
+## 6. Locust closed-loop 正式執行
+
+```bash
+./run_test.sh ./.env
+```
+
+每一級 users 都會啟動獨立 Locust process，避免前一級的 client 狀態污染下一級。預設沒有 think time，每個 user 完成一筆端到端 transaction 後立即送下一筆，適合尋找最大負載。
+
+預設 `CONVERSATION_MODE=per_user`：每個 Locust user 第一次請求建立 conversation，後續重用它；每筆 transaction 仍產生唯一的 `chat_id`。這可避免 conversation 建立／儲存層掩蓋模型負載。若要刻意測完整 conversation 建立路徑，才改用 `per_request`。
+
+`short` profile 固定使用短二元判斷，適合測容量上限；完成後建議再將 `.env` 改成：
+
+```dotenv
+PROMPT_PROFILE=mixed
+```
+
+用接近臨場不確定性的題目組合重跑一次。
+
+不要一開始就直接壓到很高。先跑 `1 2 4 8 16 32`，查看結果後再以另一個 `RUN_ID` 細測邊界，例如 `24 28 32 36 40`。
+
+## 7. Telemetry
+
+若 load generator 能連到 vLLM Prometheus endpoint：
+
+```dotenv
+VLLM_METRICS_URL=http://vllm-host:8000/metrics
+```
+
+runner 會同步保存 running/waiting requests、KV cache、prompt/generation tokens、success、prefix cache 與 preemption 指標。
+
+若測試就是在 H200 主機執行，可另外設定：
+
+```dotenv
+COLLECT_LOCAL_GPU=1
+```
+
+否則 GPU 指標應在 H200 主機另外保存；不要把 load generator 移到 H200 只為了收 `nvidia-smi`，那會改變被測環境。最簡單的遠端方式是在 H200 主機執行：
+
+```bash
+python3 collect_metrics.py \
+  --output-dir /tmp/multimodal-server-monitor \
+  --vllm-url http://127.0.0.1:8000/metrics \
+  --gpu
+```
+
+這種獨立收集沒有自動 stage 名稱，應保留開始／結束時間，帶回後與 client UTC 時間對齊。若可從 load generator 直接讀 `/metrics`，優先使用 runner 的整合方式。
+
+## 8. 結果內容
+
+每次執行會產生：
+
+```text
+results/<run_id>/
+├── run_config.txt             # 不含 token
+├── images_manifest.csv        # 測試使用的資料快照
+├── questions.json             # 題庫快照
+├── monitor/
+│   ├── vllm_metrics.csv
+│   └── gpu_metrics.csv
+├── stage_001_1u/
+│   ├── transactions_<pid>.csv
+│   ├── locust_stats.csv
+│   ├── locust_stats_history.csv
+│   ├── locust_failures.csv
+│   ├── locust_report.html
+│   └── locust.log
+├── summary.csv
+└── report.md
+```
+
+`unthrottled_load.py` 會產生較精簡、可攜的結構：
+
+```text
+results/<run_id>/
+├── run_config.txt             # 不含 token；記錄 burst/rate 參數與 conversation strategy
+├── images_manifest.csv        # 測試圖片快照
+├── questions.json             # 題庫快照
+├── stage_001_burst_8c/
+│   └── transactions.csv       # 每筆的排程／開始／結束時間、unique chat ID、SSE 結果
+├── summary.csv                # 每級的平均/p95/max、失敗、timeout 與同步誤差
+├── report.md                  # 第一個 60 秒 cutoff candidate 與錯誤摘要
+└── report.html                # 可離線開啟的並發數 × 完整回答時間圖表
+```
+
+將整個 `results/<run_id>/` 帶回即可，不要帶 `.env` 或 token。
+
+逐筆 transaction 包含：
+
+- 圖片類別、解析度與大小。
+- prompt ID/profile。
+- conversation ID、唯一 chat ID、attachment ID，以及 API 回傳的 request/correlation trace ID。
+- conversation、upload、SSE status 與 latency。
+- SSE headers time、TTFT、SSE 事件最大空窗、完整 SSE time、完整 transaction time。
+- `timeout_basis`：僅以 `first_token` 標記首 token 超過 60 秒或尚無 token 的約 60 秒失敗候選。
+- `sse-burst` 的 preparation 狀態、同步放行時間及 `release_skew_ms`。
+- `answer_valid` 與 `normalized_answer`；short profile 只有嚴格輸出「符合」或「不符合」才算有效答案。
+- content event 數、回覆字數、completion marker。
+- 明確的 error type 與截短錯誤內容。
+- CSV 保存最多五個截短後的 SSE 事件；`sse_raw.jsonl` 保存原始行及事件分隔空行供核對完成格式，
+  兩者皆可用 `CAPTURE_RESPONSE=0` 關閉。
+
+`sse_event_count` 不是 token 數。真正 token throughput 只從 vLLM metrics 計算。
+
+## 9. 將結果帶回本地分析
+
+### 查看 API 實際回傳的文字
+
+`CAPTURE_RESPONSE=1` 時，新執行的 `unthrottled_load.py` 會在結果根目錄產生
+`answers.html`。直接開啟可逐筆查看 API 內容串接、chat/conversation ID、圖片路徑，
+以及可展開的原始 SSE 時間序列。這個檢視不截短回答、不刪除純數字片段，
+也不自動把字面 `↵`／`␣` 換成真正的換行／空白。
+
+既有已含 `sse_raw.jsonl` 的結果不必重測，可直接輸出前五筆及生成完整 HTML：
+
+```bash
+python3 inspect_sse.py results/你的run_id --html results/你的run_id/answers.html
+```
+
+只看某一筆：
+
+```bash
+python3 inspect_sse.py results/你的run_id --chat-id 該筆chat_id
+```
+
+`--limit 0` 可把全部回答印在終端機；HTML 包含全部匹配的回答，不受 console limit 限制。
+報告內容來自 API 回傳，並非直接抓取 vLLM 輸出。若怪字已出現在原始 SSE 中，代表它們
+不是本地 CSV 顯示時加入；仍需與後端收到的 vLLM response 比對，才能判定由哪一層產生。
+CSV 的 `response_preview` 經截短及顯示轉義，不應當作逐字原始回答。
+
+整個 `results/<run_id>/` 複製回本地，不需要圖片原檔，也不需要 token：
+
+```bash
+python3 analyze_results.py /path/to/results/<run_id>
+```
+
+它會重新產生：
+
+- `summary.csv`：每級負載的吞吐、錯誤率與 p50/p95/p99。
+- `report.md`：暫定通過級別、峰值吞吐、錯誤分布及 telemetry 摘要。
+
+暫定通過門檻來自 `.env`：
+
+```dotenv
+MAX_ERROR_RATE_PERCENT=1
+MAX_P95_TTFT_MS=3000
+MAX_P95_TOTAL_MS=10000
+```
+
+改動門檻後可以在本地重新分析，不必重跑壓測。最終建議容量仍應在候選級別做至少 30 分鐘確認，正式營運點則保留約 20–30% headroom。
+
+## 注意事項
+
+- 預設每個虛擬 user 建立並重用一個 conversation，但每筆 transaction 仍上傳新 attachment 並使用唯一 chat ID。請確認 attachment 的 TTL 或清理方式。
+- 大量重複使用同一張圖片可能觸發 multimodal cache。manifest 快照可用來檢查圖片分布。
+- load generator CPU 建議低於 70%；若 Locust 出現 CPU warning，結果代表 client 上限，不是 H200 上限。
+- `response_preview` 預設保存最多 500 字。若輸入不是合成資料或回覆可能含敏感資訊，將 `CAPTURE_RESPONSE=0`。
+- `cutoff_60s_candidates` 依已確認的首 token 限制判定；仍需後端 log 確認失敗根因。
+  TTFT 超過 60 秒的成功回答也會標記超限，並於該級結束後停止升壓。
+- 首 token 及時到達後的 `sse_record_save_error` 不會標成 60 秒 cutoff。
+  120 秒 client read timeout 與 180 秒測試安全上限也不冒充約 60 秒的系統斷線。
+  其他錯誤仍會停止升壓，避免把未完成回答的資料當作完整容量曲線。
